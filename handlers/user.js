@@ -147,6 +147,10 @@ function registerUserHandlers(bot) {
       return ctx.reply('Сначала войдите через /start');
     }
 
+    if (!user.is_active) {
+      return ctx.reply('Вы не в чате. Войдите через /start');
+    }
+
     if (user.is_banned) {
       const checked = checkAndExpireBan(user);
       if (checked.is_banned) {

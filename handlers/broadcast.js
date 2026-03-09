@@ -1,5 +1,10 @@
 const { getAllActiveUsers, saveMessage } = require('../db');
 
+const moderatorIds = (process.env.MODERATOR_IDS || '')
+  .split(',')
+  .map(id => id.trim())
+  .filter(Boolean);
+
 async function broadcastMessage(bot, senderId, senderUser, text) {
   const users = getAllActiveUsers();
 
@@ -8,15 +13,18 @@ async function broadcastMessage(bot, senderId, senderUser, text) {
   const timestamp = new Date().toISOString().replace('T', ' ').slice(0, 19);
   console.log(`[${timestamp}] [${senderUser.pseudonym}]: ${text}`);
 
-  for (const user of users) {
-    const isSender = String(user.telegram_id) === String(senderId);
-    if (isSender) continue; // отправитель не получает дубль своего сообщения
+  // Получатели: активные пользователи + модераторы (кроме отправителя)
+  const recipientIds = new Set([
+    ...users.map(u => String(u.telegram_id)),
+    ...moderatorIds,
+  ]);
+  recipientIds.delete(String(senderId));
 
+  for (const telegramId of recipientIds) {
     try {
-      await bot.telegram.sendMessage(user.telegram_id, `[${senderUser.pseudonym}]: ${text}`);
+      await bot.telegram.sendMessage(telegramId, `[${senderUser.pseudonym}]: ${text}`);
     } catch (e) {
-      // Пользователь заблокировал бота или удалил чат — пропускаем
-      console.warn(`Не удалось доставить сообщение пользователю ${user.pseudonym}: ${e.message}`);
+      console.warn(`Не удалось доставить сообщение ${telegramId}: ${e.message}`);
     }
   }
 }
