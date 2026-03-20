@@ -33,6 +33,16 @@ function initDB() {
     );
   `);
 
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS broadcast_messages (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      message_db_id INTEGER NOT NULL,
+      chat_id TEXT NOT NULL,
+      message_id INTEGER NOT NULL,
+      FOREIGN KEY (message_db_id) REFERENCES messages(id)
+    );
+  `);
+
   // Миграция: добавить ban_until если колонки ещё нет
   const columns = db.prepare("PRAGMA table_info(users)").all().map(c => c.name);
   if (!columns.includes('ban_until')) {
@@ -124,6 +134,31 @@ function checkAndExpireBan(user) {
   return user;
 }
 
+function saveBroadcastMessage(messageDbId, chatId, messageId) {
+  db.prepare('INSERT INTO broadcast_messages (message_db_id, chat_id, message_id) VALUES (?, ?, ?)')
+    .run(messageDbId, String(chatId), messageId);
+}
+
+function getLastMessagesByUser(userId, count = 1) {
+  return db.prepare(
+    'SELECT * FROM messages WHERE user_id = ? AND is_deleted = 0 ORDER BY id DESC LIMIT ?'
+  ).all(userId, count);
+}
+
+function getBroadcastMessages(messageDbId) {
+  return db.prepare('SELECT * FROM broadcast_messages WHERE message_db_id = ?').all(messageDbId);
+}
+
+function findBroadcastByChatAndMessage(chatId, messageId) {
+  return db.prepare(
+    'SELECT * FROM broadcast_messages WHERE chat_id = ? AND message_id = ?'
+  ).get(String(chatId), messageId);
+}
+
+function markMessageDeleted(messageDbId) {
+  db.prepare('UPDATE messages SET is_deleted = 1 WHERE id = ?').run(messageDbId);
+}
+
 function deactivateUser(telegramId) {
   db.prepare('UPDATE users SET is_active = 0 WHERE telegram_id = ?')
     .run(String(telegramId));
@@ -134,4 +169,4 @@ function reactivateUser(telegramId) {
     .run(String(telegramId));
 }
 
-module.exports = { initDB, findUser, findUserById, findUserByPseudonym, createUser, getAllActiveUsers, getUsersList, saveMessage, updatePseudonym, warnUser, getWarningsCount, banUser, unbanUser, checkAndExpireBan, deactivateUser, reactivateUser };
+module.exports = { initDB, findUser, findUserById, findUserByPseudonym, createUser, getAllActiveUsers, getUsersList, saveMessage, updatePseudonym, warnUser, getWarningsCount, banUser, unbanUser, checkAndExpireBan, deactivateUser, reactivateUser, saveBroadcastMessage, getLastMessagesByUser, getBroadcastMessages, markMessageDeleted, findBroadcastByChatAndMessage };

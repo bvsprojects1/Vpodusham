@@ -1,5 +1,5 @@
 const { requireModerator } = require('../middleware/moderator');
-const { getAllActiveUsers, getUsersList, findUserById, findUserByPseudonym, banUser, unbanUser, warnUser, getWarningsCount } = require('../db');
+const { getAllActiveUsers, getUsersList, findUserById, findUserByPseudonym, banUser, unbanUser, warnUser, getWarningsCount, getLastMessagesByUser, getBroadcastMessages, markMessageDeleted } = require('../db');
 
 const MOD_PSEUDONYM = process.env.MOD_PSEUDONYM || 'Модератор';
 
@@ -28,20 +28,35 @@ function registerModeratorHandlers(bot) {
   // /ban <псевдоним> [часы] — забанить пользователя
   bot.command('ban', requireModerator, async (ctx) => {
     const args = ctx.message.text.split(' ').slice(1);
-    const pseudonym = args[0];
-    const hours = args[1] ? parseInt(args[1]) : null;
 
-    if (!pseudonym) {
-      return ctx.reply('Использование: /ban <псевдоним> [часы]\nПример: /ban Grom 24');
+    if (args.length === 0) {
+      return ctx.reply('Использование: /ban <псевдоним> [часы]\nПример: /ban Grom 24\nБез часов — бан навсегда.');
     }
 
-    if (args[1] && (isNaN(hours) || hours <= 0)) {
-      return ctx.reply('Укажите корректное количество часов (целое число больше 0).');
-    }
+    // Сначала пробуем весь текст как псевдоним (приоритет у точного ника)
+    const fullText = args.join(' ');
+    let target = findUserByPseudonym(fullText);
+    let pseudonym, hours;
 
-    const target = findUserByPseudonym(pseudonym);
-    if (!target) {
-      return ctx.reply(`Пользователь [${pseudonym}] не найден.`);
+    if (target) {
+      // Весь текст — это ник (например "Прогер 24"), бан навсегда
+      pseudonym = fullText;
+      hours = null;
+    } else {
+      // Если не нашли, пробуем последний аргумент как часы
+      const lastArg = args[args.length - 1];
+      const lastIsNumber = args.length > 1 && /^\d+$/.test(lastArg) && parseInt(lastArg) > 0;
+
+      if (lastIsNumber) {
+        pseudonym = args.slice(0, -1).join(' ');
+        target = findUserByPseudonym(pseudonym);
+        hours = target ? parseInt(lastArg) : null;
+      }
+
+      if (!target) {
+        // Ни полный текст, ни без последнего слова не дали результат
+        return ctx.reply(`Пользователь [${fullText}] не найден.`);
+      }
     }
 
     banUser(pseudonym, hours);
@@ -63,14 +78,78 @@ function registerModeratorHandlers(bot) {
     ctx.reply(`Пользователь [${pseudonym}] заблокирован ${durationText}.`);
   });
 
-  // /warn <псевдоним> <причина>
+  // /del <псевдоним> [количество] — удалить последние сообщения пользователя у всех
+  bot.command('del', requireModerator, async (ctx) => {
+    const args = ctx.message.text.split(' ').slice(1);
+
+    if (args.length === 0) {
+      return ctx.reply('Использование: /del <псевдоним> [количество]\nПример: /del Grom 5\nБез количества — удалит последнее сообщение.');
+    }
+
+    // Аналогично /ban: сначала проверяем весь текст как ник
+    const fullText = args.join(' ');
+    let target = findUserByPseudonym(fullText);
+    let pseudonym, count;
+
+    if (target) {
+      pseudonym = fullText;
+      count = 1;
+    } else {
+      const lastArg = args[args.length - 1];
+      const lastIsNumber = args.length > 1 && /^\d+$/.test(lastArg) && parseInt(lastArg) > 0;
+
+      if (lastIsNumber) {
+        pseudonym = args.slice(0, -1).join(' ');
+        target = findUserByPseudonym(pseudonym);
+        count = target ? parseInt(lastArg) : null;
+      }
+
+      if (!target) {
+        return ctx.reply(`Пользователь [${fullText}] не найден.`);
+      }
+    }
+
+    const messages = getLastMessagesByUser(target.id, count);
+    if (messages.length === 0) {
+      return ctx.reply(`У [${pseudonym}] нет сообщений для удаления.`);
+    }
+
+    let deleted = 0;
+    for (const msg of messages) {
+      const copies = getBroadcastMessages(msg.id);
+      for (const copy of copies) {
+        try {
+          await bot.telegram.deleteMessage(copy.chat_id, copy.message_id);
+          deleted++;
+        } catch (e) {
+          // Сообщение уже удалено или слишком старое
+        }
+      }
+      markMessageDeleted(msg.id);
+    }
+
+    console.log(`[DEL] [${pseudonym}]: удалено ${messages.length} сообщ., ${deleted} копий`);
+    ctx.reply(`Удалено ${messages.length} сообщ. от [${pseudonym}] (${deleted} копий из чатов).`);
+  });
+
+  // /warn <псевдоним> | <причина>
   bot.command('warn', requireModerator, async (ctx) => {
-    const parts = ctx.message.text.split(' ').slice(1);
-    const pseudonym = parts[0];
-    const reason = parts.slice(1).join(' ');
+    const rawArgs = ctx.message.text.split(' ').slice(1).join(' ');
+    const separatorIndex = rawArgs.indexOf('|');
+
+    let pseudonym, reason;
+    if (separatorIndex !== -1) {
+      pseudonym = rawArgs.slice(0, separatorIndex).trim();
+      reason = rawArgs.slice(separatorIndex + 1).trim();
+    } else {
+      // Обратная совместимость: первое слово — псевдоним, остальное — причина
+      const parts = rawArgs.split(' ');
+      pseudonym = parts[0];
+      reason = parts.slice(1).join(' ');
+    }
 
     if (!pseudonym || !reason) {
-      return ctx.reply('Использование: /warn <псевдоним> <причина>\nПример: /warn Grom оскорбления');
+      return ctx.reply('Использование: /warn <псевдоним> | <причина>\nПример: /warn Grom | оскорбления\nДля ников с пробелами используйте | как разделитель.');
     }
 
     const target = findUserByPseudonym(pseudonym);
@@ -109,7 +188,7 @@ function registerModeratorHandlers(bot) {
 
   // /unban <псевдоним>
   bot.command('unban', requireModerator, async (ctx) => {
-    const pseudonym = ctx.message.text.split(' ')[1];
+    const pseudonym = ctx.message.text.split(' ').slice(1).join(' ');
 
     if (!pseudonym) {
       return ctx.reply('Использование: /unban <псевдоним>');
